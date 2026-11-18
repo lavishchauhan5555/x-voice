@@ -1,0 +1,152 @@
+X-VOICE CUSTOM FINETUNING CHANGES: TRANSFER GUIDE
+================================================
+
+SCOPE
+-----
+These local changes add the custom vocabulary and dataset path workflow for
+Stage 1 fine-tuning, plus a Kaggle guide for two-GPU training. They are not
+automatically included in a separate GitHub clone. Copy the files below into
+the corresponding paths in that clone.
+
+FILES TO REPLACE IN THE CLONE
+-----------------------------
+src/x_voice/model/trainer.py
+  Loads checkpoint text embedding rows into the expanded vocabulary. New
+  vocabulary rows keep their random initialization. Existing vocabulary IDs
+  must remain in the same order; append added tokens.
+
+src/x_voice/model/utils.py
+  Reads custom vocabulary lines without stripping the last token character
+  and maps the custom tokenizer to the IPA v6 text splitting rules.
+
+src/x_voice/model/cfm.py
+  Routes the custom tokenizer through the IPA tokenizer when preparing text.
+
+src/x_voice/model/cfm_sft.py
+  Applies the same custom-tokenizer routing in the Stage 2 model code.
+
+src/x_voice/model/inferencer_gp.py
+  Adds custom-tokenizer support in this inference path.
+
+src/x_voice/model/dataset.py
+  Loads the custom dataset path format and supports raw or mel Arrow data.
+
+src/x_voice/train/train.py
+  Passes dataset type and audio type options from the training config to the
+  dataset loader.
+
+src/x_voice/train/README.md
+  Documents custom Stage 1 dataset and vocabulary requirements and links to
+  the Kaggle guide.
+
+NEW FILES TO ADD TO THE CLONE
+-----------------------------
+src/x_voice/configs/XVoice_Custom_Finetune.yaml
+  Example Stage 1 fine-tuning configuration. Edit checkpoint, dataset,
+  vocabulary, language list, vocoder, and output paths for your environment.
+
+src/x_voice/train/KAGGLE_FINETUNING.md
+  Kaggle setup, dataset preparation expectations, GPU check, and two-GPU
+  Accelerate launch instructions.
+
+COPY FROM A WINDOWS CHECKOUT (POWERSHELL)
+----------------------------------------
+Set SourceRepo to the checkout containing these changes and CloneRepo to the
+fresh clone that should receive them. Run this cell in PowerShell:
+
+$SourceRepo = 'D:\x-voice\X-Voice'
+$CloneRepo = 'D:\path\to\your\X-Voice-clone'
+
+$Files = @(
+  'src/x_voice/model/trainer.py',
+  'src/x_voice/model/utils.py',
+  'src/x_voice/model/cfm.py',
+  'src/x_voice/model/cfm_sft.py',
+  'src/x_voice/model/inferencer_gp.py',
+  'src/x_voice/model/dataset.py',
+  'src/x_voice/train/train.py',
+  'src/x_voice/train/README.md',
+  'src/x_voice/configs/XVoice_Custom_Finetune.yaml',
+  'src/x_voice/train/KAGGLE_FINETUNING.md'
+)
+
+foreach ($File in $Files) {
+  $Source = Join-Path $SourceRepo $File
+  $Destination = Join-Path $CloneRepo $File
+  $Parent = Split-Path -Parent $Destination
+  New-Item -ItemType Directory -Force -Path $Parent | Out-Null
+  Copy-Item -LiteralPath $Source -Destination $Destination -Force
+}
+
+The copy commands replace the listed files in CloneRepo. Review or commit the
+clone after copying. TRANSFER_CHANGES.txt itself is an inventory document and
+does not need to be copied unless desired.
+
+COPY FROM A LINUX CHECKOUT (BASH)
+---------------------------------
+Set the two directories and run from a shell. Replace /path/to/... with your
+actual checkout locations:
+
+SOURCE_REPO=/path/to/checkout/with/changes
+CLONE_REPO=/path/to/fresh/X-Voice-clone
+
+FILES=(
+  src/x_voice/model/trainer.py
+  src/x_voice/model/utils.py
+  src/x_voice/model/cfm.py
+  src/x_voice/model/cfm_sft.py
+  src/x_voice/model/inferencer_gp.py
+  src/x_voice/model/dataset.py
+  src/x_voice/train/train.py
+  src/x_voice/train/README.md
+  src/x_voice/configs/XVoice_Custom_Finetune.yaml
+  src/x_voice/train/KAGGLE_FINETUNING.md
+)
+
+for file in "${FILES[@]}"; do
+  mkdir -p "$CLONE_REPO/$(dirname "$file")"
+  cp "$SOURCE_REPO/$file" "$CLONE_REPO/$file"
+done
+
+KAGGLE NOTEBOOK COPY CELL
+-------------------------
+If both the source checkout and destination clone are mounted in a Kaggle
+Notebook, set these paths to their actual mount locations and run:
+
+from pathlib import Path
+import shutil
+
+source_repo = Path('/kaggle/input/source-repo/X-Voice')
+clone_repo = Path('/kaggle/working/X-Voice')
+files = [
+    'src/x_voice/model/trainer.py',
+    'src/x_voice/model/utils.py',
+    'src/x_voice/model/cfm.py',
+    'src/x_voice/model/cfm_sft.py',
+    'src/x_voice/model/inferencer_gp.py',
+    'src/x_voice/model/dataset.py',
+    'src/x_voice/train/train.py',
+    'src/x_voice/train/README.md',
+    'src/x_voice/configs/XVoice_Custom_Finetune.yaml',
+    'src/x_voice/train/KAGGLE_FINETUNING.md',
+]
+for relative_path in files:
+    source = source_repo / relative_path
+    destination = clone_repo / relative_path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+
+After copying, change Kaggle config paths to /kaggle/input/... for read-only
+data/checkpoints and /kaggle/working/... for training outputs. The two-GPU
+launch command is documented in src/x_voice/train/KAGGLE_FINETUNING.md.
+
+IMPORTANT TOKENIZER NOTE
+------------------------
+The current custom tokenizer mode uses IPA v6 token splitting; it does not
+load an arbitrary external tokenizer implementation. The vocabulary should
+match that splitting rule. Preserve old token order and append new tokens so
+the pretrained embedding rows keep the intended token meanings.
+
+These files configure Stage 1 custom-data fine-tuning. Stage 2 is a separate
+workflow using train_sft.py and its generated prompt data; this transfer list
+does not add a complete Stage 2 data preparation or Kaggle training workflow.

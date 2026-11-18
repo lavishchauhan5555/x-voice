@@ -181,7 +181,7 @@ class Inferencer_gp:
             changed = gen_text_ipa[i]
             if self.tokenizer == "pinyin":
                 text_source_input.append(convert_char_to_pinyin([changed + " " + original])[0])
-            elif self.tokenizer.startswith("ipa"):
+            elif self.tokenizer.startswith("ipa") or self.tokenizer == "custom":
                 text_source_input.append(str_to_list_ipa_all(changed + " " + original, self.tokenizer))
             else:
                 text_source_input.append(changed + " " + original)

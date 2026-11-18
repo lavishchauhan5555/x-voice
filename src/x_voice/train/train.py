@@ -44,6 +44,12 @@ def main(model_cfg):
     pretrained_path = model_cfg.ckpts.get("pretrained_path", None)
     freeze_update = model_cfg.ckpts.get("freeze_update", None)
     continue_training = model_cfg.ckpts.get("continue_training", None)
+    save_dir = os.fspath(model_cfg.ckpts.save_dir)
+    checkpoint_path = (
+        save_dir
+        if os.path.isabs(save_dir)
+        else str(files("x_voice").joinpath(f"../../{save_dir}"))
+    )
 
     # init trainer
     trainer = Trainer(
@@ -53,7 +59,7 @@ def main(model_cfg):
         num_warmup_updates=model_cfg.optim.num_warmup_updates,
         save_per_updates=model_cfg.ckpts.save_per_updates,
         keep_last_n_checkpoints=model_cfg.ckpts.keep_last_n_checkpoints,
-        checkpoint_path=str(files("x_voice").joinpath(f"../../{model_cfg.ckpts.save_dir}")),
+        checkpoint_path=checkpoint_path,
         batch_size_per_gpu=model_cfg.datasets.batch_size_per_gpu,
         batch_size_type=model_cfg.datasets.batch_size_type,
         max_samples=model_cfg.datasets.max_samples,
@@ -73,9 +79,18 @@ def main(model_cfg):
         pretrained_path=pretrained_path,
         freeze_update=freeze_update,
         continue_training=continue_training,
+        language_sampling_alpha=model_cfg.datasets.get("language_sampling_alpha", None),
+        pretrained_languages=model_cfg.ckpts.get("pretrained_languages", None),
     )
 
-    train_dataset = load_dataset(model_cfg.datasets.name, tokenizer, mel_spec_kwargs=model_cfg.model.mel_spec, root_dir=model_cfg.datasets.get("root_dir",None))
+    train_dataset = load_dataset(
+        model_cfg.datasets.name,
+        tokenizer,
+        dataset_type=model_cfg.datasets.get("dataset_type", "CustomDataset"),
+        audio_type=model_cfg.datasets.get("audio_type", "raw"),
+        mel_spec_kwargs=model_cfg.model.mel_spec,
+        root_dir=model_cfg.datasets.get("root_dir", None),
+    )
     trainer.train(
         train_dataset,
         num_workers=model_cfg.datasets.num_workers,

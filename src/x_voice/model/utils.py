@@ -190,7 +190,7 @@ def str_to_list_ipa_all(ipa_string: str, tokenizer, language_id=None) -> List[st
     if tokenizer == "ipa_v3":
         # print("Uncomment this for tokenizer debugging in utils.py.")
         fields = str_to_list_ipa_v3(ipa_string)
-    elif tokenizer == "ipa_v6":
+    elif tokenizer in ("ipa_v6", "custom"):
         fields = str_to_list_ipa_v6(ipa_string)
     else: 
         print(f"{tokenizer} is not a supported  version of ipa.")
@@ -292,7 +292,7 @@ def get_tokenizer(dataset_name, tokenizer, sft: bool = False):
         with open(dataset_name, "r", encoding="utf-8") as f:
             vocab_char_map = {}
             for i, char in enumerate(f):
-                vocab_char_map[char[:-1]] = i
+                vocab_char_map[char.rstrip("\r\n")] = i
         vocab_size = len(vocab_char_map)
 
     return vocab_char_map, vocab_size

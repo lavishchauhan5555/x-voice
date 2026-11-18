@@ -131,7 +131,7 @@ class CFM(nn.Module):
 
         if isinstance(text, list) and isinstance(text[0],str):
             if exists(self.vocab_char_map):
-                if self.tokenizer.startswith("ipa"):
+                if self.tokenizer.startswith("ipa") or self.tokenizer == "custom":
                     text = list_str_to_idx_ipa(text, self.vocab_char_map, self.tokenizer, language_ids=language_ids).to(device)
                 else:
                     text = list_str_to_idx(text, self.vocab_char_map).to(device)
@@ -315,7 +315,7 @@ class CFM(nn.Module):
         if isinstance(text, list):
             if exists(self.vocab_char_map):
                 pre_text=text
-                if self.tokenizer.startswith("ipa"):
+                if self.tokenizer.startswith("ipa") or self.tokenizer == "custom":
                     text = list_str_to_idx_ipa(text, self.vocab_char_map, self.tokenizer, language_ids=language_ids).to(device)
                 else:
                     text = list_str_to_idx(text, self.vocab_char_map).to(device)

@@ -1,5 +1,79 @@
 # Training
 
+## Fine-tune on a custom multilingual dataset
+
+For a two-GPU Kaggle run, follow the [Kaggle fine-tuning guide](KAGGLE_FINETUNING.md).
+
+For a custom dataset, use the stage 1 training script and the example
+[`XVoice_Custom_Finetune.yaml`](../configs/XVoice_Custom_Finetune.yaml). The dataset directory must contain either a Hugging Face dataset saved as
+`raw/` or an Arrow file named `raw.arrow`, plus `duration.json` with a
+`duration` array in the same row order. Each row needs:
+
+```text
+audio_path: path to audio (mono or multichannel; it will be converted to mono)
+text: text already converted to the representation used by your tokenizer
+duration: audio length in seconds
+language_id: language code listed in model.arch.languages
+```
+
+If the source data contains only WAV files, make a metadata manifest before
+training. A WAV file alone does not provide the transcript needed for TTS;
+obtain or create a transcript for each recording, and attach its language ID
+from trusted dataset metadata or the known language folder. Do not infer the
+language ID from the speaker or filename unless your dataset defines that
+convention.
+
+Audio should be between 0.3 and 30 seconds. Relative `audio_path` values are
+resolved against `datasets.root_dir`. Use 24 kHz-compatible audio; the loader
+resamples it to the configured `target_sample_rate`.
+
+Set `model.tokenizer: custom` and point `model.tokenizer_path` to a UTF-8
+`vocab.txt` with one token per line. To expand a pretrained vocabulary, keep
+every old token in its original line/ID and append new tokens after them. The
+trainer copies all pretrained text embedding rows (including the padding row)
+into the same indices; extra rows retain the model's random initialization.
+Reordering or removing old tokens will give IDs the wrong pretrained
+embeddings. The vocabulary must tokenize `text` with the same rules used by
+`x_voice.model.utils.str_to_list_ipa_v*`; `custom` selects the vocabulary file
+but does not define new tokenization rules: `custom` currently uses the IPA v6
+text splitting rules. Update `model.arch.languages` to cover all `language_id`
+values.
+
+For new languages, keep every language in the pretrained checkpoint in the
+same order in `model.arch.languages`, then append the new `language_id` values.
+Set `ckpts.pretrained_languages` to the checkpoint's original language list
+and order. Checkpoint loading maps the old language embedding rows by language
+ID, copies the unknown/dropout row to the new final row, and leaves only added
+language rows randomly initialized. The custom fine-tuning config starts with
+the repository's base language list in both settings; append your data IDs to
+`model.arch.languages` only.
+
+To control the language mix, set `datasets.language_sampling_alpha` in the
+config. It uses the sum of each language's row `duration` values to set its
+sampling probability, then shuffles and samples examples with replacement
+each epoch. `0.5` samples languages proportional to the square root of their
+hours, `1.0` follows the raw hour proportions, and `0.0` gives each language
+an equal share. The custom fine-tuning example uses `0.5`; for your six
+languages this is approximately Bolo 29.9%, Manipuri 10.5%, Santali 16.1%,
+Chakma 16.1%, Garo 15.7%, and Nagamese 11.7%. Probabilities are printed when
+training starts. Since sampling is with replacement, some rows may repeat and
+others may not appear in a given epoch. Set the value to `null` to disable
+language reweighting and use the existing shuffle behavior.
+
+Adjust the example model dimensions and mel settings to match the checkpoint.
+Set the pretrained checkpoint and output directory, then run from the repo
+root:
+
+```bash
+accelerate config
+accelerate launch src/x_voice/train/train.py --config-name XVoice_Custom_Finetune.yaml
+```
+
+For a stage 1 checkpoint that should be fine-tuned immediately, leave
+`ckpts.continue_training: true`; this trains the loaded backbone instead of
+freezing it. Keep `false` only when you intend to use the repository's
+pretrained freeze behavior.
+
 - Check your FFmpeg installation:
   ```bash
   ffmpeg -version

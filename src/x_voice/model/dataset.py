@@ -394,7 +394,15 @@ class DynamicBatchSampler(Sampler[list[int]]):
         self.max_samples = max_samples
         self.random_seed = random_seed
         self.epoch = 0
+        self.drop_residual = drop_residual
 
+        self.batches = self._build_batches()
+        self._batches_epoch = getattr(self.sampler, "epoch", 0)
+
+        # Ensure even batches with accelerate BatchSamplerShard cls under frame_per_batch setting
+        self.drop_last = True
+
+    def _build_batches(self):
         indices, batches = [], []
         data_source = self.sampler.data_source
 
@@ -407,13 +415,13 @@ class DynamicBatchSampler(Sampler[list[int]]):
         batch = []
         batch_frames = 0
         for idx, frame_len in tqdm(
-            indices, desc=f"Creating dynamic batches with {frames_threshold} audio frames per gpu"
+            indices, desc=f"Creating dynamic batches with {self.frames_threshold} audio frames per gpu"
         ):
-            if batch_frames + frame_len <= self.frames_threshold and (max_samples == 0 or len(batch) < max_samples):
+            if batch_frames + frame_len <= self.frames_threshold and (self.max_samples == 0 or len(batch) < self.max_samples):
                 batch.append(idx)
                 batch_frames += frame_len
             else:
-                if len(batch) > 0:
+                if batch:
                     batches.append(batch)
                 if frame_len <= self.frames_threshold:
                     batch = [idx]
@@ -422,20 +430,25 @@ class DynamicBatchSampler(Sampler[list[int]]):
                     batch = []
                     batch_frames = 0
 
-        if not drop_residual and len(batch) > 0:
+        if not self.drop_residual and batch:
             batches.append(batch)
-
-        del indices
-        self.batches = batches
-
-        # Ensure even batches with accelerate BatchSamplerShard cls under frame_per_batch setting
-        self.drop_last = True
+        return batches
 
     def set_epoch(self, epoch: int) -> None:
         """Sets the epoch for this sampler."""
         self.epoch = epoch
+        if hasattr(self.sampler, "set_epoch"):
+            self.sampler.set_epoch(epoch)
+            self.batches = self._build_batches()
+            self._batches_epoch = epoch
 
     def __iter__(self):
+        sampler_epoch = getattr(self.sampler, "epoch", self.epoch)
+        if sampler_epoch != self._batches_epoch:
+            self.epoch = sampler_epoch
+            self.batches = self._build_batches()
+            self._batches_epoch = sampler_epoch
+
         # Use both random_seed and epoch for deterministic but different shuffling per epoch
         if self.random_seed is not None:
             g = torch.Generator()
@@ -449,6 +462,58 @@ class DynamicBatchSampler(Sampler[list[int]]):
 
     def __len__(self):
         return len(self.batches)
+
+
+class LanguageWeightedSampler(Sampler[int]):
+    """Sample examples by language-level audio hours, reproducibly per epoch."""
+
+    def __init__(self, dataset, alpha: float, num_samples: int | None = None, seed: int = 0):
+        if alpha < 0:
+            raise ValueError("language_sampling_alpha must be non-negative")
+
+        self.data_source = dataset
+        self.num_samples = len(dataset) if num_samples is None else num_samples
+        self.seed = seed
+        self.epoch = 0
+
+        rows = dataset.data
+        language_durations = {}
+        language_counts = {}
+        example_languages = []
+        for index in range(len(dataset)):
+            row = rows[index]
+            language = row.get("language_id", "en")
+            duration = float(row.get("duration", 1.0))
+            if duration <= 0:
+                duration = 1.0
+            example_languages.append(language)
+            language_durations[language] = language_durations.get(language, 0.0) + duration
+            language_counts[language] = language_counts.get(language, 0) + 1
+
+        language_masses = {language: hours**alpha for language, hours in language_durations.items()}
+        total_mass = sum(language_masses.values())
+        self.language_probabilities = {
+            language: mass / total_mass for language, mass in language_masses.items()
+        }
+        weights = [
+            language_masses[language] / language_counts[language]
+            for language in example_languages
+        ]
+        self.weights = torch.tensor(weights, dtype=torch.double)
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __iter__(self):
+        generator = torch.Generator()
+        generator.manual_seed(self.seed + self.epoch)
+        sampled_indices = torch.multinomial(
+            self.weights, self.num_samples, replacement=True, generator=generator
+        )
+        return iter(sampled_indices.tolist())
+
+    def __len__(self):
+        return self.num_samples
 
 
 # Load dataset
@@ -511,16 +576,24 @@ def load_dataset(
             )
 
     elif dataset_type == "CustomDatasetPath":
-        try:
-            train_dataset = load_from_disk(f"{dataset_name}/raw")
-        except:  # noqa: E722
-            train_dataset = Dataset_.from_file(f"{dataset_name}/raw.arrow")
+        if audio_type == "mel":
+            train_dataset = Dataset_.from_file(f"{dataset_name}/mel.arrow")
+        else:
+            try:
+                train_dataset = load_from_disk(f"{dataset_name}/raw")
+            except (FileNotFoundError, ValueError):
+                train_dataset = Dataset_.from_file(f"{dataset_name}/raw.arrow")
 
         with open(f"{dataset_name}/duration.json", "r", encoding="utf-8") as f:
             data_dict = json.load(f)
         durations = data_dict["duration"]
+        preprocessed_mel = audio_type == "mel"
         train_dataset = CustomDataset(
-            train_dataset, durations=durations, preprocessed_mel=preprocessed_mel, **mel_spec_kwargs
+            train_dataset,
+            root_dir=root_dir,
+            durations=durations,
+            preprocessed_mel=preprocessed_mel,
+            **mel_spec_kwargs,
         )
 
     elif dataset_type == "HFDataset":

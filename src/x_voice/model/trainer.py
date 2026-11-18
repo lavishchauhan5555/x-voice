@@ -16,7 +16,7 @@ from torch.utils.data import DataLoader, Dataset, SequentialSampler
 from tqdm import tqdm
 
 from x_voice.model import CFM
-from x_voice.model.dataset import DynamicBatchSampler, collate_fn
+from x_voice.model.dataset import DynamicBatchSampler, LanguageWeightedSampler, collate_fn
 from x_voice.model.utils import default, exists
 
 import random
@@ -58,6 +58,8 @@ class Trainer:
         pretrained_path: str = None,
         freeze_update: int | None = None,
         continue_training: bool | None = None,
+        language_sampling_alpha: float | None = None,
+        pretrained_languages: list[str] | None = None,
     ):
         ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
 
@@ -145,10 +147,55 @@ class Trainer:
         self.freeze = False
         self.freeze_update = freeze_update
         self.continue_training = continue_training
+        self.language_sampling_alpha = language_sampling_alpha
+        self.pretrained_languages = pretrained_languages
 
     @property
     def is_main(self):
         return self.accelerator.is_main_process
+
+    @staticmethod
+    def _copy_expanded_text_embedding(source_state, target_state, key):
+        """Copy pretrained rows into a larger text embedding, preserving new init rows."""
+        source = source_state[key]
+        target = target_state[key]
+        if (
+            source.ndim != 2
+            or target.ndim != 2
+            or source.shape[1] != target.shape[1]
+            or source.shape[0] >= target.shape[0]
+            or not key.endswith("text_embed.text_embed.weight")
+        ):
+            return None
+
+        expanded = target.clone()
+        expanded[: source.shape[0]].copy_(source.to(device=expanded.device, dtype=expanded.dtype))
+        return expanded
+
+    @staticmethod
+    def _copy_language_embedding_by_id(source, target, source_languages, target_languages):
+        """Preserve existing language rows by ID and leave newly added rows initialized."""
+        if source.ndim != 2 or target.ndim != 2 or source.shape[1] != target.shape[1]:
+            return None
+        if source.shape[0] != len(source_languages) + 1 or target.shape[0] != len(target_languages) + 1:
+            return None
+
+        target_ids = {language: index for index, language in enumerate(target_languages)}
+        if any(language not in target_ids for language in source_languages):
+            missing = [language for language in source_languages if language not in target_ids]
+            raise ValueError(
+                "The target model language list must retain every pretrained language; "
+                f"missing: {missing}"
+            )
+
+        expanded = target.clone()
+        for source_index, language in enumerate(source_languages):
+            expanded[target_ids[language]].copy_(
+                source[source_index].to(device=expanded.device, dtype=expanded.dtype)
+            )
+        # The final embedding row is reserved for dropped/unknown language.
+        expanded[-1].copy_(source[-1].to(device=expanded.device, dtype=expanded.dtype))
+        return expanded
 
     def save_checkpoint(self, update, last=False):
         self.accelerator.wait_for_everyone()
@@ -214,10 +261,38 @@ class Trainer:
                 filtered_dict = {}
                 for k, v in checkpoint.items():
                     clean_k = k.replace("ema_model.", "")
-                    if clean_k in model_dict and v.shape == model_dict[clean_k].shape and "cond_fusion" not in clean_k:
+                    if clean_k not in model_dict or "cond_fusion" in clean_k:
+                        continue
+                    if clean_k.endswith("lang_embed.weight") and self.pretrained_languages:
+                        target_languages = getattr(model_obj.transformer, "languages", None)
+                        expanded = self._copy_language_embedding_by_id(
+                            v,
+                            model_dict[clean_k],
+                            self.pretrained_languages,
+                            target_languages or [],
+                        )
+                        if expanded is not None:
+                            if self.is_main and v.shape != expanded.shape:
+                                print(
+                                    f"will preserve {len(self.pretrained_languages)} language embeddings; "
+                                    f"new language rows keep random initialization ({expanded.shape[0] - 1} languages total)"
+                                )
+                            filtered_dict[clean_k] = expanded
+                    elif v.shape == model_dict[clean_k].shape:
                         if self.is_main:
                             print(f"will load {clean_k}")
                         filtered_dict[clean_k] = v
+                    elif clean_k.endswith("text_embed.text_embed.weight"):
+                        expanded = self._copy_expanded_text_embedding(
+                            {clean_k: v}, model_dict, clean_k
+                        )
+                        if expanded is not None:
+                            if self.is_main:
+                                print(
+                                    f"will load {v.shape[0] - 1} existing text embeddings into "
+                                    f"{expanded.shape[0] - 1} rows; new token rows keep random initialization"
+                                )
+                            filtered_dict[clean_k] = expanded
                 model_obj.load_state_dict(filtered_dict, strict=False)
                 if self.is_main:
                     self.ema_model.ema_model.load_state_dict(filtered_dict, strict=False)
@@ -320,20 +395,41 @@ class Trainer:
         else:
             generator = None
 
-        if self.batch_size_type == "sample":
-            train_dataloader = DataLoader(
+        language_sampler = None
+        if self.language_sampling_alpha is not None:
+            language_sampler = LanguageWeightedSampler(
                 train_dataset,
+                alpha=self.language_sampling_alpha,
+                seed=resumable_with_seed or 0,
+            )
+            if self.is_main:
+                print(
+                    "Language sampling probabilities: "
+                    + ", ".join(
+                        f"{language}={probability:.1%}"
+                        for language, probability in sorted(language_sampler.language_probabilities.items())
+                    )
+                    + f" (alpha={self.language_sampling_alpha})"
+                )
+
+        if self.batch_size_type == "sample":
+            loader_kwargs = dict(
+                dataset=train_dataset,
                 collate_fn=collate_fn,
                 num_workers=num_workers,
                 pin_memory=True,
-                persistent_workers=True,
+                persistent_workers=num_workers > 0,
                 batch_size=self.batch_size_per_gpu,
-                shuffle=True,
-                generator=generator,
             )
+            if language_sampler is not None:
+                train_dataloader = DataLoader(**loader_kwargs, sampler=language_sampler)
+            else:
+                train_dataloader = DataLoader(
+                    **loader_kwargs, shuffle=True, generator=generator
+                )
         elif self.batch_size_type == "frame":
             self.accelerator.even_batches = False
-            sampler = SequentialSampler(train_dataset)
+            sampler = language_sampler or SequentialSampler(train_dataset)
             batch_sampler = DynamicBatchSampler(
                 sampler,
                 self.batch_size_per_gpu,
@@ -398,8 +494,12 @@ class Trainer:
                 current_dataloader = train_dataloader
 
             # Set epoch for the batch sampler if it exists
+            if language_sampler is not None:
+                language_sampler.set_epoch(epoch)
             if hasattr(train_dataloader, "batch_sampler") and hasattr(train_dataloader.batch_sampler, "set_epoch"):
                 train_dataloader.batch_sampler.set_epoch(epoch)
+            elif hasattr(train_dataloader, "sampler") and hasattr(train_dataloader.sampler, "set_epoch"):
+                train_dataloader.sampler.set_epoch(epoch)
 
             progress_bar = tqdm(
                 range(math.ceil(len(train_dataloader) / self.grad_accumulation_steps)),
