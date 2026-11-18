@@ -8,7 +8,8 @@ num2words
 nemo_text_processing
 WeTextProcessing 
 xphonebr 
-ctranslate2==4.5.0
+ctranslate2==4.5.0; python_version < "3.13"
+ctranslate2>=4.9.0,<5; python_version >= "3.13"
 pyphen
 bg-text-normalizer
 git+https://github.com/TartuNLP/tts_preprocess_et.git
