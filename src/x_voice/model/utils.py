@@ -215,7 +215,6 @@ def list_str_to_idx_ipa(
             for token in fields:
                 idx = vocab_char_map.get(token, unk_idx)
                 if idx == unk_idx and token != "…":
-                    print(f"{token} is invalid")
                     token_indices = [vocab_char_map.get(t, unk_idx) for t in token]
                     indices.extend(token_indices)
                 else:
@@ -245,7 +244,6 @@ def list_list_to_idx(
             for token in ipa_list:
                 idx = vocab_char_map.get(token, unk_idx)
                 if idx == unk_idx and token != "…":
-                    print(f"{token} is invalid")
                     token_indices = [vocab_char_map.get(t, unk_idx) for t in token]
                     indices.extend(token_indices)
                 else:
