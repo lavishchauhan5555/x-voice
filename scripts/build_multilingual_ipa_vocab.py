@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Append verified IPA-v6 units found in multilingual Arrow datasets.
+"""Extend an X-Voice vocabulary from multilingual Arrow text columns.
 
-Input text must already be phonemized. Separate phones within a word with '|',
-for example: k|a|t (spaces continue to represent word boundaries). This script
-does not convert ordinary spelling to IPA.
+Use --mode characters for ordinary transcripts: it adds only Unicode
+codepoints present in the data, never whole words. Use --mode ipa for text
+already phonemized as IPA-v6, with phones separated by '|'.
 """
 
 from __future__ import annotations
@@ -66,7 +66,9 @@ def main() -> None:
                         metavar="LANG_ID=ARROW_PATH",
                         help="Repeat once per language/Arrow file; supports two source datasets per language.")
     parser.add_argument("--text-column", default="text",
-                        help="Column containing phonemized IPA-v6 text (default: text, as in X-Voice prepared Arrow files).")
+                        help="Text column to read from each Arrow file (default: text).")
+    parser.add_argument("--mode", choices=("ipa", "characters"), default="characters",
+                        help="characters adds literal transcript characters; ipa adds separated IPA-v6 units (default: characters).")
     parser.add_argument("--min-count", type=int, default=2,
                         help="Only append a unit seen at least this often (default: 2).")
     parser.add_argument("--max-unit-length", type=int, default=8,
@@ -114,15 +116,28 @@ def main() -> None:
             if not text.strip():
                 continue
             nonempty += 1
-            separated += "|" in text
-            counts_by_language[language].update(
-                unit for unit in str_to_list_ipa_v6(text) if unit != " "
-            )
+            if args.mode == "characters":
+                # Match the model's OOV character fallback exactly: Python
+                # Unicode codepoints, without normalization or whole words.
+                counts_by_language[language].update(
+                    character for character in text
+                    if character not in "\r\n"
+                )
+            else:
+                separated += "|" in text
+                counts_by_language[language].update(
+                    unit for unit in str_to_list_ipa_v6(text) if unit != " "
+                )
 
         ratio = separated / nonempty if nonempty else 0.0
-        print(f"{language}: {len(dataset):,} rows, {nonempty:,} nonempty, "
-              f"{ratio:.1%} rows contain phone separator '|'")
-        if nonempty == 0 or ratio < args.min_separated_ratio:
+        if args.mode == "ipa":
+            print(f"{language}: {len(dataset):,} rows, {nonempty:,} nonempty, "
+                  f"{ratio:.1%} rows contain phone separator '|'")
+        else:
+            print(f"{language}: {len(dataset):,} rows, {nonempty:,} nonempty transcript rows")
+        if nonempty == 0:
+            parser.error(f"No nonempty text rows found in {arrow_path}")
+        if args.mode == "ipa" and ratio < args.min_separated_ratio:
             parser.error(
                 f"{arrow_path} does not look sufficiently phonemized ({ratio:.1%} separated; "
                 f"required {args.min_separated_ratio:.1%}). Select a phonemized IPA column."
@@ -134,7 +149,7 @@ def main() -> None:
     additions = sorted(
         token for token, count in total_counts.items()
         if token not in existing and count >= args.min_count and token.strip()
-        and len(token) <= args.max_unit_length
+        and (args.mode == "characters" or len(token) <= args.max_unit_length)
     )
 
     args.output_vocab.parent.mkdir(parents=True, exist_ok=True)
@@ -150,7 +165,7 @@ def main() -> None:
                 action = "already_in_base_vocab"
             elif count < args.min_count:
                 action = "below_min_count"
-            elif len(token) > args.max_unit_length:
+            elif args.mode == "ipa" and len(token) > args.max_unit_length:
                 action = "too_long_review_as_possible_word"
             else:
                 action = "appended"
@@ -158,7 +173,8 @@ def main() -> None:
             writer.writerow([token, count, ";".join(langs), per_language, action])
 
     print(f"Base vocabulary: {len(old_lines):,} tokens")
-    print(f"Appended units: {len(additions):,} (min count {args.min_count}, max length {args.max_unit_length})")
+    print(f"Mode: {args.mode}")
+    print(f"Appended tokens: {len(additions):,} (minimum count {args.min_count})")
     print(f"Expanded vocabulary: {len(old_lines) + len(additions):,} tokens")
     print(f"Saved vocabulary: {args.output_vocab}")
     print(f"Saved audit report: {report_path}")
