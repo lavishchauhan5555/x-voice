@@ -143,7 +143,7 @@ class Trainer:
             self.optimizer = AdamW(model.parameters(), lr=learning_rate, fused=True)
         self.model, self.optimizer = self.accelerator.prepare(self.model, self.optimizer)
         
-        self.pretrained_path = pretrained_path
+        self.pretrained_path = os.fspath(pretrained_path) if pretrained_path is not None else None
         self.freeze = False
         self.freeze_update = freeze_update
         self.continue_training = continue_training
