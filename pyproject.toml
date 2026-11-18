@@ -31,7 +31,6 @@ dependencies = [
     "ema_pytorch>=0.5.2",
     "epitran",
     "finnsyll",
-    "g2pk",
     "gradio>=6.0.0",
     "hydra-core>=1.3.0",
     "jieba",
@@ -87,6 +86,9 @@ eval = [
 ]
 denoise = [
     "deepfilternet",
+]
+korean-tokenizer = [
+    "g2pk",
 ]
 ipa_v4 = [
     "lingua",
