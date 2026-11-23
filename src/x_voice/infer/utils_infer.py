@@ -29,7 +29,6 @@ from cached_path import cached_path
 from huggingface_hub import hf_hub_download
 from omegaconf import OmegaConf
 from pydub import AudioSegment, silence
-from transformers import pipeline
 from vocos import Vocos
 from fastlid import fastlid
 
@@ -196,6 +195,11 @@ def initialize_asr_pipeline(device: str = device, dtype=None):
             else torch.float32
         )
     global asr_pipe
+    # Import Transformers only when automatic reference transcription is needed.
+    # Normal inference with a supplied reference transcript does not require ASR,
+    # and this avoids importing optional TensorFlow/JAX backends unnecessarily.
+    from transformers import pipeline
+
     asr_pipe = pipeline(
         "automatic-speech-recognition",
         model="openai/whisper-large-v3-turbo",
