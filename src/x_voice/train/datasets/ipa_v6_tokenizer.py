@@ -22,8 +22,6 @@ from pythainlp.transliterate import transliterate
 from pythainlp.transliterate.ipa import trans_list
 
 import pyopenjtalk
-import g2pk
-
 _KOREAN_G2P_MODEL = None
 class G2pk:
     """On behalf of g2pk.G2p.
@@ -54,6 +52,13 @@ class G2pk:
     def __call__(self, text) -> List[str]:
         global _KOREAN_G2P_MODEL
         if _KOREAN_G2P_MODEL is None:
+            try:
+                import g2pk
+            except ImportError as exc:
+                raise ImportError(
+                    "Korean text tokenization requires the optional 'g2pk' package. "
+                    "Install it with `pip install -e '.[korean-tokenizer]'`."
+                ) from exc
             print(f"--- Process {os.getpid()} is loading the heavy Korean model... ---")
             _KOREAN_G2P_MODEL = g2pk.G2p()
 
